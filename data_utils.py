@@ -14,6 +14,7 @@ def dense_to_sparse(dense):
         rdense = sess.run(rdense_t)
     assert (np.all(dense == rdense))
 
+
 def _pad_sequences(sequences, pad_tok, max_length):
     """
     Args:
@@ -27,10 +28,22 @@ def _pad_sequences(sequences, pad_tok, max_length):
     for seq in sequences:
         seq = list(seq)
         seq_ = seq[:max_length] + [pad_tok]*max(max_length - len(seq), 0)
-        sequence_padded +=  [seq_]
+        sequence_padded += [seq_]
         sequence_length += [min(len(seq), max_length)]
 
     return sequence_padded, sequence_length
+
+
+def ctc_label(labels, blank_idx=30):
+    ctc_labels = []
+    for label in labels:
+        ctc_label = []
+        for char in label:
+            ctc_label.append(blank_idx)
+            ctc_label.append(char)
+        ctc_label.append(blank_idx)
+        ctc_labels.append(ctc_label)
+    return ctc_labels
 
 
 def pad_sequences(sequences, pad_tok, nlevels=1):
@@ -72,7 +85,6 @@ def minibatches(data, minibatch_size):
     Returns:
         list of tuples
     """
-    #TODO: shuffle samples
     from sklearn.utils import shuffle
     shuffled_data = shuffle(data)
     x_batch, y_batch = [], []

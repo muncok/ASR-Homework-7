@@ -8,7 +8,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 frames = np.load("./data/data_in.npy")
 transcript = np.load("./data/data_trans.npy")
 
-nb_char = 30 # 29 + <blank>
+nb_char = 30  # 29 + <blank>
 
 id_to_char = []
 with open("./char_set.txt", 'r') as f:

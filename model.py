@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import tensorflow as tf
-from data_utils import minibatches, pad_sequences
+from data_utils import minibatches, pad_sequences, ctc_label
 from general_utils import Progbar, print_sentence, get_logger
 from tensorflow.contrib.rnn import LSTMCell, MultiRNNCell, DropoutWrapper, LSTMStateTuple
 
@@ -39,8 +39,8 @@ class PhoneModel(object):
                         name="sequence_lengths")
 
         # shape = (batch size, max length of sequence in batch)
-        self.labels = tf.placeholder(tf.int32, shape=[None, None],
-                        name="phones")
+        # shape = (batch size) for ctc
+        self.labels = tf.sparse_placeholder(tf.int32, name='labels')
 
         # hyper parameters
         self.keep_prob = tf.placeholder(dtype=tf.float32, shape=[],
@@ -60,10 +60,7 @@ class PhoneModel(object):
         Returns:
             dict {placeholder: value}
         """
-        # no pad_sequences for ctc
-        # frames, sequence_lengths = pad_sequences(framelist, np.zeros((123), dtype=np.float32))
-        frames = framelist
-        sequence_lengths = [frame.shape[0] for frame in frames]
+        frames, sequence_lengths = pad_sequences(framelist, np.zeros(123, dtype=np.float32))
 
         # build feed dictionary
         feed = {
@@ -72,8 +69,9 @@ class PhoneModel(object):
         }
 
         if phones is not None:
-            phones, _ = pad_sequences(phones, 0)
-            feed[self.labels] = phones
+            # ctc_phones = ctc_label(phones)
+            # padded_ctc_phones = pad_sequences(ctc_phones, 0)
+            feed[self.labels] = self.ctc_sparse_label(phones)
 
         if lr is not None:
             feed[self.lr] = lr
@@ -158,6 +156,13 @@ class PhoneModel(object):
         """
         self.labels_pred = tf.cast(tf.argmax(self.logits, axis=-1), tf.int32)
 
+    def add_ctc_pred_op(self):
+        decoded, log_prob = tf.nn.ctc_greedy_decoder(logits, seq_len)
+
+        # Accuracy: label error rate
+        acc = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32),
+                                      targets))
+
     def add_loss_op(self):
         """
         Adds loss to self
@@ -171,24 +176,39 @@ class PhoneModel(object):
         tf.summary.scalar("loss", self.loss)
 
     @staticmethod
-    def dense_to_sparse(dense_t):
-        idx = tf.where(tf.not_equal(dense_t, 0))
-        # Use tf.shape(a_t, out_type=tf.int64) instead of a_t.get_shape() if tensor shape is dynamic
+    def ctc_sparse_label(labels):
+        # idx = tf.where(tf.not_equal(labels, 0))
         # sparse = tf.SparseTensor(idx, tf.gather_nd(dense_t, idx), dense_t.get_shape())
-        sparse = tf.SparseTensor(idx, tf.gather_nd(dense_t, idx), tf.shape(dense_t, out_type=tf.int64) )
+        # sparse = tf.SparseTensor(idx, tf.gather_nd(labels, idx), tf.shape(labels, out_type=tf.int64))
+        indices, values = [], []
+        max_length = 0
+        for i, label in enumerate(labels):
+            if len(label) > max_length: max_length = len(label)
+            for j, char in enumerate(label):
+                indices.append([i, j])
+                values.append(char)
+        shape = [len(labels), max_length]
+        indices = np.asarray(indices, dtype=np.int64)
+        values =  np.asarray(values, dtype=np.float32)
+        shape = np.asarray(shape, dtype=np.int64)
+        sparse = tf.SparseTensorValue(indices, values, shape)
+
         return sparse
 
     def add_ctc_loss(self):
         """
         Adds ctc_loss 
         """
-        sparse_labels = self.dense_to_sparse(self.labels)
-        self.loss = ctc_loss = tf.nn.ctc_loss(sparse_labels, self.logits, self.sequence_lengths)
-
+        # sparse_labels = self.ctc_sparse_label(self.labels)
+        ctc_loss = tf.nn.ctc_loss(self.labels, self.logits, self.sequence_lengths,
+                                              preprocess_collapse_repeated=False, ctc_merge_repeated=True,
+                                              time_major=False)
+        self.loss = tf.reduce_mean(ctc_loss)
     def add_train_op(self):
         """
         Add train_op to self
         """
+
         with tf.variable_scope("train_step"):
             optimizer = tf.train.AdamOptimizer(self.lr)
             self.train_op = optimizer.minimize(self.loss)
@@ -245,13 +265,13 @@ class PhoneModel(object):
 
             fd, _ = self.get_feed_dict(framelist, phones, self.config.lr, self.config.keep_prob)
 
-            _, train_loss, summary = sess.run([self.train_op, self.loss, self.merged], feed_dict=fd)
-
+            # _, train_loss, summary = sess.run([self.train_op, self.loss, self.merged], feed_dict=fd)
+            _, train_loss = sess.run([self.train_op, self.loss], feed_dict=fd)
             prog.update(i + 1, [("train loss", train_loss)])
 
             # tensorboard
-            if i % 10 == 0:
-                self.file_writer.add_summary(summary, epoch*nbatches + i)
+            # if i % 10 == 0:
+            #     self.file_writer.add_summary(summary, epoch*nbatches + i)
 
         acc, per = self.run_evaluate(sess, dev)
         self.logger.info(" - dev accuracy {:04.2f} - PER {:04.2f}".format(100*acc, 100*per))
